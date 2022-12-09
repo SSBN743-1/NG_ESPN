@@ -1,0 +1,140 @@
+#!/bin/bash
+###############################################################################################################
+# Script to automate the install of Apache
+# Author - Josh Williamson (Parsons/NDP SA)
+#
+#
+#
+# Version 1.0 (December 2022)
+###############################################################################################################
+
+#############
+# GLOBALS
+#############
+export DT; export PKI_DIR; export null
+export DT; DT=$(date)
+export PKI_DIR; PKI_DIR="/etc/pki/tls"
+export HTTP_DIR; HTTP_DIR="/etc/httpd/conf/"
+
+#############
+# FUNCTIONS
+#############
+Install_Apache_and_Deps ()
+{
+	# Test if already installed
+	local x; x=$(yum list installed | grep -c httpd)
+		if [[ $x = 0 ]]; then
+			yum install httpd -y
+		else
+			null=null
+		fi
+}
+
+Install_Open_SSL ()
+{
+	# Test if already installed
+	local y; y=$(yum list installed | grep -c openssl)
+		if [[ $y = 0 ]]; then
+			yum install openssl -y
+		else
+			null=null
+		fi
+}
+
+Key_Gen ()
+{
+	# Generate keypair
+	# *** IMPORTANT *** make sure -subj is correct, otherwise, openssl prompts for information
+	if [[ -d $PKI_DIR ]]; then
+		openssl req -nodes -new -x509 -keyout $PKI_DIR/apache.pem -out $PKI_DIR/pri_apache.cert \
+			-subj "/C=US/ST=CO/L=Aurora/O=NG/OU=ESPN/CN=www.espn.com/emailAddress=espn@espn.com"
+	else
+		mkdir -p $PKI_DIR
+		openssl req -nodes -new -x509 -keyout $PKI_DIR/apache.pem -out $PKI_DIR/pri_apache.cert \
+			-subj "/C=US/ST=CO/L=Aurora/O=NG/OU=ESPN/CN=www.espn.com/emailAddress=espn@espn.com"
+	fi
+}
+
+STIG ()
+{
+	# I defined all array's for STIG-ing locally just to keep it all together
+	# The below statments are each unique for various STIGs
+
+	# V-214245 - Make modules dav_module, dav_fs-module, and dav_lock_module are commecnted out of *dav.conf (requires restart)
+	declare -a DAV=(dav_module dav_fs_module dav_lock_module)
+		export i; for i in "${DAV[@]}"; do
+			sed -e '/$i/ s/^#*/#/' -i "$HTTPD_CFG_DIR/$DAV_FILE"
+		done
+	systemctl restart httpd
+
+	# V-214238 - Make sure core modules are loaded
+	declare -a MOD=(core_module http_module so_module mpm_prefork_module)
+		for x in "${MOD[@]}"; do
+		export M_OUT; M_OUT=$(httpd -M | grep -c "$x")
+			if [[ $M_OUT -eq 0 ]]; then
+				echo "Problem in STIG 214238"
+			else
+				null=null
+			fi
+		unset M_OUT
+	done
+
+	## V-214268 - Make sure Session and SessionCookieName are present in httpd.conf and correctly configured
+	declare -a SESS=(Session SessionCookieName)
+	declare -a Sess_Values=(On httpOnly)
+	local y=0
+		while [[ $y -lt  ${#SESS[@]} ]]; do
+			export SESS_OUT
+			SESS_OUT=$(cat "$HTTP_DIR"/httpd.conf | grep -c $y)
+				if [[ "$SESS_OUT" -eq 0 ]]; then
+					echo "${Sess_Values[$y]}" >> "$HTTP_DIR"/httpd.conf
+				else
+					null=null
+				fi
+		((y++))
+		done
+
+	# V-214246 - Make sure httpd is listening on port 80
+	export PORT
+	PORT=$(cat "$HTTP_DIR"/httpd.conf | grep Listen | awk '{print $2}')
+		if [[ $PORT -ne 80 ]]; then
+		echo "Problem with the listen port"
+		else
+			null=null
+		fi
+
+	# V-214228 - Make sure Keepalive is off and MaxKeepAliveRequests is less than 100
+	declare -a KEEP=(KeepAlive MaxKeepAliveRequests)
+	declare -a KEEP_Values=(On 100)
+		local t=0
+		while [[ $t -lt ${#KEEP[@]} ]]; do
+			export KEEP_OUT
+			export KEEP_OUT1
+			KEEP_OUT=$(grep "${KEEP[$t]}" "$HTTP_DIR"/httpd.conf | awk '{print $2}' | wc -l)
+				if [[ $KEEP_OUT -eq 0 ]]; then
+					echo "${KEEP[$t]} ${KEEP_Values[$t]}" >> "$HTTP_DIR"/httpd.conf
+				elif [[ $t -eq 1 ]]; then
+					KEEP_OUT1=$(cat "$HTTP_DIR"/httpd.conf | grep "${KEEP[$t]}" | awk '{print $2}')
+						if [[ $KEEP_OUT1 -gt 100 ]]; then
+							echo "${KEEP[$t]} ${KEEP_Values[$t]}" >> "$HTTP_DIR"/httpd.conf
+						else
+							null=null
+						fi
+				fi
+			unset KEEP_OUT
+			unset KEEP_OUT1
+		((t++))
+		done
+}
+
+
+#############
+# CALL FUNCTIONS
+#############
+Install_Apache_and_Deps
+Install_Open_SSL
+Key_Gen
+STIG
+
+###############################################################################################################
+# End Script
